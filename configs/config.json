@@ -5,31 +5,31 @@
       "properties": {
         "document_type": {
           "type": "string",
-          "description": "Тип юридического документа (исковое_заявление, решение_суда, договор, доверенность и т.д.)"
+          "description": "Document type (iskovoe_zayavlenie, reshenie_suda, dogovor, doverennost, etc.)"
         },
         "document_date": {
           "type": ["string", "null"],
-          "description": "Дата документа в формате ДД.ММ.ГГГГ"
+          "description": "Document date in DD.MM.YYYY format"
         },
         "case_number": {
           "type": ["string", "null"],
-          "description": "Номер дела, если указан"
+          "description": "Case number if specified"
         },
         "parties": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "Стороны документа (истец, ответчик, заявитель и т.д.)"
+          "description": "Document parties (plaintiff, defendant, applicant, etc.)"
         },
         "summary": {
           "type": "string",
-          "description": "Краткое содержание документа на 2-3 предложения"
+          "description": "Brief document summary in 2-3 sentences"
         }
       },
       "required": ["document_type", "document_date", "case_number", "parties", "summary"]
     },
     "settings": {
       "extraction_mode": "PREMIUM",
-      "system_prompt": "Вы анализируете юридические документы на русском языке. Определите тип документа, дату, номер дела и участников.",
+      "system_prompt": "You are analyzing Russian legal documents. Identify document type, date, case number and parties.",
       "citation_bbox": true,
       "use_reasoning": false,
       "cite_sources": true,
@@ -40,43 +40,43 @@
     "categories": [
       {
         "name": "iskovoe_zayavlenie",
-        "description": "Исковое заявление - документ, содержащий требования истца к ответчику, подаваемый в суд. Обычно содержит шапку с указанием суда, сторон, суть требований и просительную часть."
+        "description": "Statement of claim - a document containing plaintiff's claims to defendant, filed in court. Usually contains header with court name, parties, essence of claims and petition part."
       },
       {
         "name": "reshenie_suda",
-        "description": "Решение суда - судебный акт, выносимый судом по существу дела. Содержит вводную, описательную, мотивировочную и резолютивную части."
+        "description": "Court decision - judicial act issued by the court on the merits of the case. Contains introductory, descriptive, reasoning and operative parts."
       },
       {
         "name": "opredelenie_suda",
-        "description": "Определение суда - судебный акт по процессуальным вопросам. Выносится по ходатайствам, вопросам принятия дела к производству и т.д."
+        "description": "Court order - judicial act on procedural matters. Issued on motions, case acceptance questions, etc."
       },
       {
         "name": "dogovor",
-        "description": "Договор - соглашение между сторонами, устанавливающее права и обязанности. Содержит предмет договора, условия, реквизиты и подписи сторон."
+        "description": "Contract - agreement between parties establishing rights and obligations. Contains subject of contract, terms, details and signatures of parties."
       },
       {
         "name": "doverennost",
-        "description": "Доверенность - документ, уполномочивающий представителя действовать от имени доверителя. Содержит данные сторон, полномочия и срок действия."
+        "description": "Power of attorney - document authorizing representative to act on behalf of principal. Contains party details, powers and validity period."
       },
       {
         "name": "hodataystvo",
-        "description": "Ходатайство - письменная просьба к суду о совершении определённых процессуальных действий. Содержит обоснование и просительную часть."
+        "description": "Motion - written request to court for specific procedural actions. Contains justification and petition part."
       },
       {
         "name": "protokol",
-        "description": "Протокол - документ, фиксирующий ход заседания, собрания или процессуального действия. Содержит дату, участников и ход событий."
+        "description": "Protocol/Minutes - document recording the course of meeting, assembly or procedural action. Contains date, participants and course of events."
       },
       {
         "name": "zayavlenie",
-        "description": "Заявление - официальное обращение в орган или организацию. Содержит адресата, заявителя, суть обращения и просьбу."
+        "description": "Application/Statement - official appeal to authority or organization. Contains addressee, applicant, essence of appeal and request."
       },
       {
         "name": "akt",
-        "description": "Акт - документ, подтверждающий совершение определённых действий или состояние объекта. Подписывается несколькими лицами."
+        "description": "Act/Certificate - document confirming certain actions or state of object. Signed by several persons."
       },
       {
         "name": "spravka",
-        "description": "Справка - документ информационного характера, подтверждающий определённые факты или сведения."
+        "description": "Reference/Certificate - informational document confirming certain facts or information."
       }
     ],
     "settings": {
