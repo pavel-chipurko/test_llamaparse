@@ -44,7 +44,7 @@ async def main():
         return
 
     files = sys.argv[1:]
-    client = await get_llama_cloud_client()
+    client = get_llama_cloud_client()
 
     print()
     print("=" * 50)
