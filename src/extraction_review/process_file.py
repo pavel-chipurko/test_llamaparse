@@ -1,10 +1,13 @@
+import io
 import logging
 from datetime import date
 from typing import Annotated, Literal
 
+import httpx
 from llama_cloud import AsyncLlamaCloud
 from llama_cloud.types.file_query_params import Filter
 from pydantic import BaseModel
+from pypdf import PdfReader, PdfWriter
 from workflows import Context, Workflow, step
 from workflows.events import Event, StartEvent, StopEvent
 from workflows.resource import Resource, ResourceConfig
@@ -36,18 +39,19 @@ class SplitJobStartedEvent(Event):
 
 
 class ProcessedSegment(BaseModel):
-    """A processed document segment with its new name."""
+    """A processed document segment with its new name and file ID."""
 
     original_file_id: str
+    new_file_id: str
     category: str
     pages: list[int]
     page_count: int
-    suggested_name: str
+    filename: str
     confidence: str
 
 
 class ProcessingResult(StopEvent):
-    """Final result with all processed segments."""
+    """Final result with all processed and split segments."""
 
     segments: list[ProcessedSegment]
     total_pages: int
@@ -64,20 +68,55 @@ class ProcessingState(BaseModel):
 
 
 def generate_document_name(category: str, page_count: int, index: int = 0) -> str:
-    """Generate document name in format: type_DD_MM_YYYY_Npages."""
+    """Generate document name in format: type_DD_MM_YYYY_Npages.pdf."""
     today = date.today()
     date_str = today.strftime("%d_%m_%Y")
     type_name = DOCUMENT_TYPE_NAMES.get(category, "document")
     suffix = f"_{index + 1}" if index > 0 else ""
-    return f"{type_name}_{date_str}_{page_count}pages{suffix}"
+    return f"{type_name}_{date_str}_{page_count}pages{suffix}.pdf"
+
+
+async def download_file(client: AsyncLlamaCloud, file_id: str) -> bytes:
+    """Download file content from LlamaCloud."""
+    content_info = await client.files.get(file_id)
+    async with httpx.AsyncClient() as http_client:
+        response = await http_client.get(content_info.url)
+        response.raise_for_status()
+        return response.content
+
+
+def extract_pages(pdf_content: bytes, pages: list[int]) -> tuple[bytes, list[int]]:
+    """Extract specific pages from PDF and return as new PDF bytes.
+
+    Args:
+        pdf_content: Original PDF file content
+        pages: List of 1-indexed page numbers to extract
+
+    Returns:
+        Tuple of (PDF bytes, list of actually extracted pages)
+    """
+    reader = PdfReader(io.BytesIO(pdf_content))
+    writer = PdfWriter()
+    total_pages = len(reader.pages)
+    extracted_pages: list[int] = []
+
+    for page_num in pages:
+        # Skip pages that don't exist in the PDF
+        if 1 <= page_num <= total_pages:
+            writer.add_page(reader.pages[page_num - 1])
+            extracted_pages.append(page_num)
+
+    output = io.BytesIO()
+    writer.write(output)
+    return output.getvalue(), extracted_pages
 
 
 class ProcessFileWorkflow(Workflow):
-    """Process legal documents: split concatenated files and rename by type.
+    """Process legal documents: split concatenated files into separate PDFs.
 
-    Accepts documents in various formats (PDF, Word, JPG, etc.),
-    identifies logical document boundaries, and generates
-    standardized names based on document type.
+    Accepts documents in various formats, identifies logical document
+    boundaries, splits into separate PDF files, and renames them
+    by document type.
     """
 
     @step()
@@ -150,10 +189,10 @@ class ProcessFileWorkflow(Workflow):
             AsyncLlamaCloud, Resource(get_llama_cloud_client)
         ],
     ) -> ProcessingResult:
-        """Wait for split to complete and generate renamed segments."""
+        """Wait for split, extract pages, and upload separate PDF files."""
         state = await ctx.store.get_state()
-        if state.split_job_id is None:
-            raise ValueError("Split job ID cannot be null")
+        if state.split_job_id is None or state.file_id is None:
+            raise ValueError("Split job ID and file ID cannot be null")
 
         ctx.write_event_to_stream(
             Status(level="info", message="Identifying document boundaries...")
@@ -174,10 +213,20 @@ class ProcessFileWorkflow(Workflow):
         segments = completed_job.result.segments
         logger.info(f"Found {len(segments)} document segments")
 
+        # Download original PDF for splitting
+        ctx.write_event_to_stream(
+            Status(level="info", message="Downloading original file...")
+        )
+        pdf_content = await download_file(llama_cloud_client, state.file_id)
+
         # Track category counts for unique naming
         category_counts: dict[str, int] = {}
         processed_segments: list[ProcessedSegment] = []
         total_pages = 0
+
+        ctx.write_event_to_stream(
+            Status(level="info", message=f"Splitting into {len(segments)} documents...")
+        )
 
         for segment in segments:
             category = segment.category
@@ -189,36 +238,45 @@ class ProcessFileWorkflow(Workflow):
             index = category_counts.get(category, 0)
             category_counts[category] = index + 1
 
-            # Generate standardized name
-            suggested_name = generate_document_name(category, page_count, index)
+            # Generate standardized filename
+            new_filename = generate_document_name(category, page_count, index)
+
+            # Extract pages and create new PDF
+            segment_pdf, extracted_pages = extract_pages(pdf_content, pages)
+
+            # Skip if no pages were extracted
+            if not extracted_pages:
+                logger.warning(f"Skipping segment {category}: no valid pages")
+                continue
+
+            # Update filename with actual page count
+            actual_page_count = len(extracted_pages)
+            new_filename = generate_document_name(category, actual_page_count, index)
+
+            # Upload new PDF file
+            new_file = await llama_cloud_client.files.create(
+                file=(new_filename, segment_pdf, "application/pdf"),
+                purpose="extract",
+                project_id=project_id,
+            )
 
             processed_segment = ProcessedSegment(
                 original_file_id=state.file_id,
+                new_file_id=new_file.id,
                 category=category,
-                pages=pages,
-                page_count=page_count,
-                suggested_name=suggested_name,
+                pages=extracted_pages,
+                page_count=actual_page_count,
+                filename=new_filename,
                 confidence=segment.confidence_category or "medium",
             )
             processed_segments.append(processed_segment)
 
-            logger.info(
-                f"Segment: {category} (pages {pages}) -> {suggested_name}"
-            )
+            logger.info(f"Created: {new_filename} (file_id: {new_file.id})")
 
-        ctx.write_event_to_stream(
-            Status(
-                level="info",
-                message=f"Found {len(processed_segments)} documents in file",
-            )
-        )
-
-        # Stream each segment for client
-        for seg in processed_segments:
             ctx.write_event_to_stream(
                 Status(
                     level="info",
-                    message=f"Document: {seg.suggested_name} (pages {seg.pages})",
+                    message=f"Created: {new_filename} (pages {pages})",
                 )
             )
 

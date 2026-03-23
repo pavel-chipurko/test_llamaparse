@@ -53,6 +53,13 @@ async def test_process_file_workflow(
     assert isinstance(result.segments, list)
     assert result.original_filename == "test.pdf"
 
+    # Verify each segment has required fields
+    for segment in result.segments:
+        assert segment.original_file_id == file_id
+        assert segment.new_file_id is not None
+        assert segment.filename.endswith(".pdf")
+        assert segment.page_count == len(segment.pages)
+
 
 @pytest.mark.asyncio
 async def test_metadata_workflow() -> None:
