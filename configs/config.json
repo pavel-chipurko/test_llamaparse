@@ -5,23 +5,31 @@
       "properties": {
         "document_type": {
           "type": "string",
-          "description": "An overarching category for the type of document (e.g. invoice, purchase order, etc.)"
+          "description": "Тип юридического документа (исковое_заявление, решение_суда, договор, доверенность и т.д.)"
+        },
+        "document_date": {
+          "type": ["string", "null"],
+          "description": "Дата документа в формате ДД.ММ.ГГГГ"
+        },
+        "case_number": {
+          "type": ["string", "null"],
+          "description": "Номер дела, если указан"
+        },
+        "parties": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Стороны документа (истец, ответчик, заявитель и т.д.)"
         },
         "summary": {
           "type": "string",
-          "description": "A 2-3 sentence summary describing the content of the document"
-        },
-        "key_points": {
-          "type": "array",
-          "items": { "type": "string" },
-          "description": "A list of key points or insights from the document"
+          "description": "Краткое содержание документа на 2-3 предложения"
         }
       },
-      "required": ["document_type", "summary", "key_points"]
+      "required": ["document_type", "document_date", "case_number", "parties", "summary"]
     },
     "settings": {
       "extraction_mode": "PREMIUM",
-      "system_prompt": null,
+      "system_prompt": "Вы анализируете юридические документы на русском языке. Определите тип документа, дату, номер дела и участников.",
       "citation_bbox": true,
       "use_reasoning": false,
       "cite_sources": true,
@@ -29,8 +37,53 @@
     }
   },
   "split": {
-    "categories": [],
-    "settings": {}
+    "categories": [
+      {
+        "name": "iskovoe_zayavlenie",
+        "description": "Исковое заявление - документ, содержащий требования истца к ответчику, подаваемый в суд. Обычно содержит шапку с указанием суда, сторон, суть требований и просительную часть."
+      },
+      {
+        "name": "reshenie_suda",
+        "description": "Решение суда - судебный акт, выносимый судом по существу дела. Содержит вводную, описательную, мотивировочную и резолютивную части."
+      },
+      {
+        "name": "opredelenie_suda",
+        "description": "Определение суда - судебный акт по процессуальным вопросам. Выносится по ходатайствам, вопросам принятия дела к производству и т.д."
+      },
+      {
+        "name": "dogovor",
+        "description": "Договор - соглашение между сторонами, устанавливающее права и обязанности. Содержит предмет договора, условия, реквизиты и подписи сторон."
+      },
+      {
+        "name": "doverennost",
+        "description": "Доверенность - документ, уполномочивающий представителя действовать от имени доверителя. Содержит данные сторон, полномочия и срок действия."
+      },
+      {
+        "name": "hodataystvo",
+        "description": "Ходатайство - письменная просьба к суду о совершении определённых процессуальных действий. Содержит обоснование и просительную часть."
+      },
+      {
+        "name": "protokol",
+        "description": "Протокол - документ, фиксирующий ход заседания, собрания или процессуального действия. Содержит дату, участников и ход событий."
+      },
+      {
+        "name": "zayavlenie",
+        "description": "Заявление - официальное обращение в орган или организацию. Содержит адресата, заявителя, суть обращения и просьбу."
+      },
+      {
+        "name": "akt",
+        "description": "Акт - документ, подтверждающий совершение определённых действий или состояние объекта. Подписывается несколькими лицами."
+      },
+      {
+        "name": "spravka",
+        "description": "Справка - документ информационного характера, подтверждающий определённые факты или сведения."
+      }
+    ],
+    "settings": {
+      "splitting_strategy": {
+        "allow_uncategorized": true
+      }
+    }
   },
   "classify": {
     "rules": [],
@@ -39,7 +92,8 @@
   "parse": {
     "settings": {
       "tier": "agentic",
-      "version": "latest"
+      "version": "latest",
+      "lang": "ru"
     }
   }
 }

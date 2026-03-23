@@ -1,245 +1,232 @@
-import asyncio
-import json
 import logging
-from typing import Annotated, Any, Literal
+from datetime import date
+from typing import Annotated, Literal
 
 from llama_cloud import AsyncLlamaCloud
-from llama_cloud.types.beta.extracted_data import ExtractedData, InvalidExtractionData
 from llama_cloud.types.file_query_params import Filter
 from pydantic import BaseModel
 from workflows import Context, Workflow, step
 from workflows.events import Event, StartEvent, StopEvent
 from workflows.resource import Resource, ResourceConfig
 
-from .clients import agent_name, get_llama_cloud_client, project_id
-from .config import EXTRACTED_DATA_COLLECTION, ExtractConfig, get_extraction_schema
+from .clients import get_llama_cloud_client, project_id
+from .config import DOCUMENT_TYPE_NAMES, SplitConfig
 
 logger = logging.getLogger(__name__)
 
 
 class FileEvent(StartEvent):
+    """Input event with file ID for processing."""
+
     file_id: str
     file_hash: str | None = None
 
 
 class Status(Event):
+    """Status update event for client notifications."""
+
     level: Literal["info", "warning", "error"]
     message: str
 
 
-class ExtractJobStartedEvent(Event):
+class SplitJobStartedEvent(Event):
+    """Internal event after split job is started."""
+
     pass
 
 
-class ExtractedEvent(Event):
-    data: ExtractedData
+class ProcessedSegment(BaseModel):
+    """A processed document segment with its new name."""
+
+    original_file_id: str
+    category: str
+    pages: list[int]
+    page_count: int
+    suggested_name: str
+    confidence: str
 
 
-class ExtractedInvalidEvent(Event):
-    """Event for extraction results that failed validation."""
+class ProcessingResult(StopEvent):
+    """Final result with all processed segments."""
 
-    data: ExtractedData[dict[str, Any]]
+    segments: list[ProcessedSegment]
+    total_pages: int
+    original_filename: str
 
 
-class ExtractionState(BaseModel):
+class ProcessingState(BaseModel):
+    """Workflow state for document processing."""
+
     file_id: str | None = None
     filename: str | None = None
     file_hash: str | None = None
-    extract_job_id: str | None = None
+    split_job_id: str | None = None
+
+
+def generate_document_name(category: str, page_count: int, index: int = 0) -> str:
+    """Generate document name in format: type_DD_MM_YYYY_Npages."""
+    today = date.today()
+    date_str = today.strftime("%d_%m_%Y")
+    type_name = DOCUMENT_TYPE_NAMES.get(category, "document")
+    suffix = f"_{index + 1}" if index > 0 else ""
+    return f"{type_name}_{date_str}_{page_count}pages{suffix}"
 
 
 class ProcessFileWorkflow(Workflow):
-    """Extract structured data from a document and save it for review."""
+    """Process legal documents: split concatenated files and rename by type.
+
+    Accepts documents in various formats (PDF, Word, JPG, etc.),
+    identifies logical document boundaries, and generates
+    standardized names based on document type.
+    """
 
     @step()
-    async def start_extraction(
+    async def start_split(
         self,
         event: FileEvent,
-        ctx: Context[ExtractionState],
+        ctx: Context[ProcessingState],
         llama_cloud_client: Annotated[
             AsyncLlamaCloud, Resource(get_llama_cloud_client)
         ],
-        extract_config: Annotated[
-            ExtractConfig,
+        split_config: Annotated[
+            SplitConfig,
             ResourceConfig(
                 config_file="configs/config.json",
-                path_selector="extract",
-                label="Extraction Settings",
-                description="Configuration for document extraction quality and features",
+                path_selector="split",
+                label="Document Categories",
+                description="Categories for identifying different types of legal documents",
             ),
         ],
-    ) -> ExtractJobStartedEvent:
-        """Start extraction job for the document."""
+    ) -> SplitJobStartedEvent:
+        """Upload document and start splitting by document type."""
         file_id = event.file_id
-        logger.info(f"Running file {file_id}")
+        logger.info(f"Processing file {file_id}")
 
-        # Get file metadata
-        try:
-            files = await llama_cloud_client.files.query(
-                filter=Filter(file_ids=[file_id])
-            )
-            file_metadata = files.items[0]
-            filename = file_metadata.name
-        except Exception as e:
-            logger.error(f"Error fetching file metadata {file_id}: {e}", exc_info=True)
-            ctx.write_event_to_stream(
-                Status(
-                    level="error",
-                    message=f"Error fetching file metadata {file_id}: {e}",
-                )
-            )
-            raise e
+        # Get file metadata via query
+        files_response = await llama_cloud_client.files.query(
+            filter=Filter(file_ids=[file_id])
+        )
+        file_metadata = files_response.items[0]
+        filename = file_metadata.name
+        logger.info(f"Processing document: {filename}")
 
-        # Start extraction job
-        logger.info(f"Extracting data from file {filename}")
         ctx.write_event_to_stream(
-            Status(level="info", message=f"Extracting data from file {filename}")
+            Status(level="info", message=f"Analyzing document structure: {filename}")
         )
 
-        extract_job = await llama_cloud_client.extraction.run(
-            config=extract_config.settings.model_dump(),
-            data_schema=extract_config.json_schema,
-            file_id=file_id,
+        # Prepare split categories from config
+        categories = [
+            {"name": cat.name, "description": cat.description}
+            for cat in split_config.categories
+        ]
+
+        # Start split job to identify document boundaries
+        split_job = await llama_cloud_client.beta.split.create(
+            categories=categories,
+            document_input={"type": "file_id", "value": file_id},
+            splitting_strategy={
+                "allow_uncategorized": split_config.settings.splitting_strategy.allow_uncategorized
+            },
             project_id=project_id,
         )
 
-        # Use file_hash from the event (computed by UI from file content)
-        # or fall back to external_file_id from file metadata for deduplication
-        file_hash = event.file_hash or file_metadata.external_file_id
+        logger.info(f"Started split job: {split_job.id}")
 
-        # Save state (mutation at end of step)
+        # Save state
         async with ctx.store.edit_state() as state:
             state.file_id = file_id
             state.filename = filename
-            state.file_hash = file_hash
-            state.extract_job_id = extract_job.id
+            state.file_hash = event.file_hash or file_metadata.external_file_id
+            state.split_job_id = split_job.id
 
-        return ExtractJobStartedEvent()
+        return SplitJobStartedEvent()
 
     @step()
-    async def complete_extraction(
+    async def complete_processing(
         self,
-        event: ExtractJobStartedEvent,
-        ctx: Context[ExtractionState],
+        event: SplitJobStartedEvent,
+        ctx: Context[ProcessingState],
         llama_cloud_client: Annotated[
             AsyncLlamaCloud, Resource(get_llama_cloud_client)
         ],
-        extract_config: Annotated[
-            ExtractConfig,
-            ResourceConfig(
-                config_file="configs/config.json",
-                path_selector="extract",
-                label="Extraction Settings",
-                description="Configuration for document extraction quality and features",
-            ),
-        ],
-    ) -> StopEvent:
-        """Wait for extraction to complete, validate results, and save for review."""
+    ) -> ProcessingResult:
+        """Wait for split to complete and generate renamed segments."""
         state = await ctx.store.get_state()
-        if state.extract_job_id is None:
-            raise ValueError("Job ID cannot be null when waiting for its completion")
+        if state.split_job_id is None:
+            raise ValueError("Split job ID cannot be null")
 
-        # Wait for extraction job to complete
-        await llama_cloud_client.extraction.jobs.wait_for_completion(
-            state.extract_job_id
+        ctx.write_event_to_stream(
+            Status(level="info", message="Identifying document boundaries...")
         )
 
-        # Get extraction result
-        extracted_result = await llama_cloud_client.extraction.jobs.get_result(
-            state.extract_job_id
-        )
-        extract_run = await llama_cloud_client.extraction.runs.get(
-            run_id=extracted_result.run_id
+        # Wait for split job completion
+        completed_job = await llama_cloud_client.beta.split.wait_for_completion(
+            state.split_job_id,
+            polling_interval=1.0,
         )
 
-        # Validate and parse extraction result
-        extracted_event: ExtractedEvent | ExtractedInvalidEvent
-        try:
+        if completed_job.status != "completed" or completed_job.result is None:
+            error_msg = f"Split job failed: {completed_job.status}"
+            logger.error(error_msg)
+            ctx.write_event_to_stream(Status(level="error", message=error_msg))
+            raise RuntimeError(error_msg)
+
+        segments = completed_job.result.segments
+        logger.info(f"Found {len(segments)} document segments")
+
+        # Track category counts for unique naming
+        category_counts: dict[str, int] = {}
+        processed_segments: list[ProcessedSegment] = []
+        total_pages = 0
+
+        for segment in segments:
+            category = segment.category
+            pages = segment.pages
+            page_count = len(pages)
+            total_pages = max(total_pages, max(pages) if pages else 0)
+
+            # Get index for this category (for unique naming)
+            index = category_counts.get(category, 0)
+            category_counts[category] = index + 1
+
+            # Generate standardized name
+            suggested_name = generate_document_name(category, page_count, index)
+
+            processed_segment = ProcessedSegment(
+                original_file_id=state.file_id,
+                category=category,
+                pages=pages,
+                page_count=page_count,
+                suggested_name=suggested_name,
+                confidence=segment.confidence_category or "medium",
+            )
+            processed_segments.append(processed_segment)
+
             logger.info(
-                f"Extracted data: {json.dumps(extracted_result.model_dump(), indent=2)}"
+                f"Segment: {category} (pages {pages}) -> {suggested_name}"
             )
-            # Create dynamic Pydantic model from JSON schema
-            schema_class = get_extraction_schema(extract_config.json_schema)
-            # Use from_extraction_result for proper metadata extraction
-            data = ExtractedData.from_extraction_result(
-                result=extract_run,
-                schema=schema_class,
-                file_name=state.filename,
-                file_id=state.file_id,
-                file_hash=state.file_hash,
-            )
-            extracted_event = ExtractedEvent(data=data)
-        except InvalidExtractionData as e:
-            logger.error(f"Error validating extracted data: {e}", exc_info=True)
-            extracted_event = ExtractedInvalidEvent(data=e.invalid_item)
-        except Exception as e:
-            logger.error(
-                f"Error extracting data from file {state.filename}: {e}",
-                exc_info=True,
-            )
-            ctx.write_event_to_stream(
-                Status(
-                    level="error",
-                    message=f"Error extracting data from file {state.filename}: {e}",
-                )
-            )
-            raise e
 
-        # Stream the extracted event to client
-        ctx.write_event_to_stream(extracted_event)
-
-        # Save extracted data for review
-        extracted_data = extracted_event.data
-        data_dict = extracted_data.model_dump()
-        # Remove past data when reprocessing the same file
-        if extracted_data.file_hash is not None:
-            delete_result = await llama_cloud_client.beta.agent_data.delete_by_query(
-                deployment_name=agent_name or "_public",
-                collection=EXTRACTED_DATA_COLLECTION,
-                filter={
-                    "file_hash": {
-                        "eq": extracted_data.file_hash,
-                    },
-                },
-            )
-            if delete_result.deleted_count > 0:
-                logger.info(
-                    f"Removed {delete_result.deleted_count} existing record(s) "
-                    f"for file {extracted_data.file_name}"
-                )
-        # finally, save the new data
-        item = await llama_cloud_client.beta.agent_data.agent_data(
-            data=data_dict,
-            deployment_name=agent_name or "_public",
-            collection=EXTRACTED_DATA_COLLECTION,
-        )
-        logger.info(
-            f"Recorded extracted data for file {extracted_data.file_name or ''}"
-        )
         ctx.write_event_to_stream(
             Status(
                 level="info",
-                message=f"Recorded extracted data for file {extracted_data.file_name or ''}",
+                message=f"Found {len(processed_segments)} documents in file",
             )
         )
-        return StopEvent(result=item.id)
+
+        # Stream each segment for client
+        for seg in processed_segments:
+            ctx.write_event_to_stream(
+                Status(
+                    level="info",
+                    message=f"Document: {seg.suggested_name} (pages {seg.pages})",
+                )
+            )
+
+        return ProcessingResult(
+            segments=processed_segments,
+            total_pages=total_pages,
+            original_filename=state.filename or "",
+        )
 
 
 workflow = ProcessFileWorkflow(timeout=None)
-
-if __name__ == "__main__":
-    from pathlib import Path
-
-    from dotenv import load_dotenv
-
-    load_dotenv()
-    logging.basicConfig(level=logging.INFO)
-
-    async def main():
-        file = await get_llama_cloud_client().files.create(
-            file=Path("test.pdf").open("rb"),
-            purpose="extract",
-        )
-        await workflow.run(start_event=FileEvent(file_id=file.id))
-
-    asyncio.run(main())

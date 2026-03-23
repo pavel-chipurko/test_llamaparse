@@ -19,7 +19,22 @@ logger = logging.getLogger(__name__)
 # The name of the collection to use for storing extracted data.
 # When developing locally, this will use the _public collection (shared within the project),
 # otherwise agent data is isolated to each agent.
-EXTRACTED_DATA_COLLECTION: str = "extraction-review"
+EXTRACTED_DATA_COLLECTION: str = "legal-documents"
+
+# Mapping of category names to Russian document type names for file naming
+DOCUMENT_TYPE_NAMES: dict[str, str] = {
+    "iskovoe_zayavlenie": "iskovoe_zayavlenie",
+    "reshenie_suda": "reshenie_suda",
+    "opredelenie_suda": "opredelenie_suda",
+    "dogovor": "dogovor",
+    "doverennost": "doverennost",
+    "hodataystvo": "hodataystvo",
+    "protokol": "protokol",
+    "zayavlenie": "zayavlenie",
+    "akt": "akt",
+    "spravka": "spravka",
+    "uncategorized": "document",
+}
 
 
 class ExtractSettings(BaseModel):
