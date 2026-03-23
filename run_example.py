@@ -19,13 +19,18 @@ from extraction_review.clients import get_llama_cloud_client
 from extraction_review.process_file import FileEvent, workflow
 
 
-async def download_file(client, file_id: str, save_path: Path) -> None:
+async def download_file(client, file_id: str, save_path: Path) -> bool:
     """Скачать файл из LlamaCloud."""
-    content_info = await client.files.get(file_id)
-    async with httpx.AsyncClient() as http_client:
-        response = await http_client.get(content_info.url)
-        response.raise_for_status()
-        save_path.write_bytes(response.content)
+    try:
+        content_info = await client.files.get(file_id)
+        async with httpx.AsyncClient(timeout=120.0) as http_client:
+            response = await http_client.get(content_info.url)
+            response.raise_for_status()
+            save_path.write_bytes(response.content)
+            return True
+    except Exception as e:
+        print(f"   ⚠️ Ошибка скачивания: {e}")
+        return False
 
 
 async def main():
@@ -99,11 +104,18 @@ async def main():
 
     print(f"\n📥 Скачиваю файлы в папку '{output_dir}'...")
 
+    downloaded = 0
     for i, seg in enumerate(result.segments, 1):
         save_path = output_dir / seg.filename
-        await download_file(client, seg.new_file_id, save_path)
+        success = await download_file(client, seg.new_file_id, save_path)
 
-        print(f"\n{i}. ✅ {seg.filename}")
+        if success:
+            print(f"\n{i}. ✅ {seg.filename}")
+            downloaded += 1
+        else:
+            print(f"\n{i}. ⚠️ {seg.filename} (не удалось скачать)")
+            print(f"   ID файла: {seg.new_file_id}")
+
         print(f"   Тип: {seg.category}")
         print(f"   Страницы: {seg.pages}")
         print(f"   Уверенность: {seg.confidence}")
